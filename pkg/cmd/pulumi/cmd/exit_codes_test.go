@@ -86,6 +86,21 @@ func TestExitCodeFor_KnownErrors(t *testing.T) {
 			want: ExitNoChanges,
 		},
 		{
+			name: "preview found resource changes",
+			err:  backenderr.PreviewChangesError{Kind: backenderr.PreviewResourceChanges},
+			want: ExitResourceChanges,
+		},
+		{
+			name: "preview found stack output changes",
+			err:  backenderr.PreviewChangesError{Kind: backenderr.PreviewStackOutputChanges},
+			want: ExitStackOutputChanges,
+		},
+		{
+			name: "preview found state changes",
+			err:  backenderr.PreviewChangesError{Kind: backenderr.PreviewStateChanges},
+			want: ExitStateChanges,
+		},
+		{
 			name: "no confirmation in non-interactive",
 			err:  backenderr.NoConfirmationInNonInteractiveError{},
 			want: ExitConfigurationError,

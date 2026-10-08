@@ -432,9 +432,9 @@ func TestSameStepMustWrite(t *testing.T) {
 	}
 }
 
-// TestSameStepMustWriteCoversEveryField fails when resource.State gets a field that SameStepMustWrite neither compares
-// nor deliberately ignores.
-func TestSameStepMustWriteCoversEveryField(t *testing.T) {
+// TestStatesDifferCoversEveryField fails when resource.State gets a field that statesDiffer neither compares nor
+// deliberately ignores.
+func TestStatesDifferCoversEveryField(t *testing.T) {
 	t.Parallel()
 
 	compared := []string{
@@ -442,9 +442,7 @@ func TestSameStepMustWriteCoversEveryField(t *testing.T) {
 		"ExtensionRef", "PropertyDependencies", "PendingReplacement", "AdditionalSecretOutputs", "Aliases",
 		"CustomTimeouts", "ImportID", "RetainOnDelete", "DeletedWith", "ReplaceWith", "IgnoreChanges",
 		"ReplaceOnChanges", "ReplacementTrigger", "HideDiff", "RefreshBeforeUpdate", "ViewOf", "ResourceHooks",
-		"SnippetID",
-		// SameStepMustWrite asserts that these are equal.
-		"Delete", "External", "ID",
+		"SnippetID", "Delete", "External", "ID",
 	}
 	ignored := []string{"Lock", "InitErrors", "Created", "Modified", "SourcePosition", "StackTrace"}
 
@@ -454,4 +452,61 @@ func TestSameStepMustWriteCoversEveryField(t *testing.T) {
 		fields = append(fields, field.Name)
 	}
 	require.ElementsMatch(t, slices.Concat(compared, ignored), fields)
+}
+
+func TestStatesDiffer(t *testing.T) {
+	t.Parallel()
+
+	urn := resource.URN("urn:pulumi:test::stack::pkgA:m:typA::resA")
+
+	cases := []struct {
+		name   string
+		old    *pkgresource.State
+		new    *pkgresource.State
+		differ bool
+	}{
+		{
+			name:   "nothing changed",
+			old:    &pkgresource.State{URN: urn, ID: "a", Custom: true},
+			new:    &pkgresource.State{URN: urn, ID: "a", Custom: true},
+			differ: false,
+		},
+		{
+			name:   "ID changed",
+			old:    &pkgresource.State{URN: urn, ID: "a", Custom: true},
+			new:    &pkgresource.State{URN: urn, ID: "b", Custom: true},
+			differ: true,
+		},
+		{
+			name:   "Delete changed",
+			old:    &pkgresource.State{URN: urn, ID: "a", Custom: true},
+			new:    &pkgresource.State{URN: urn, ID: "a", Custom: true, Delete: true},
+			differ: true,
+		},
+		{
+			name:   "External changed",
+			old:    &pkgresource.State{URN: urn, ID: "a", Custom: true},
+			new:    &pkgresource.State{URN: urn, ID: "a", Custom: true, External: true},
+			differ: true,
+		},
+		{
+			name:   "Provider changed",
+			old:    &pkgresource.State{URN: urn, ID: "a", Custom: true, Provider: "provA"},
+			new:    &pkgresource.State{URN: urn, ID: "a", Custom: true, Provider: "provB"},
+			differ: true,
+		},
+		{
+			name:   "RefreshBeforeUpdate changed",
+			old:    &pkgresource.State{URN: urn, ID: "a", Custom: true},
+			new:    &pkgresource.State{URN: urn, ID: "a", Custom: true, RefreshBeforeUpdate: true},
+			differ: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			require.Equal(t, tc.differ, statesDiffer(tc.old, tc.new))
+		})
+	}
 }

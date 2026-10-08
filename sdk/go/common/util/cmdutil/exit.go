@@ -132,6 +132,9 @@ const (
 	ExitNoChanges           = 7
 	ExitCancelled           = 8
 	ExitTimeout             = 9
+	ExitResourceChanges     = 11 // pulumi preview --detailed-exitcode: resources would change
+	ExitStackOutputChanges  = 12 // pulumi preview --detailed-exitcode: stack outputs but no resources would change
+	ExitStateChanges        = 13 // pulumi preview --detailed-exitcode: only other state would change
 	ExitInternalError       = 255
 )
 

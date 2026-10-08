@@ -38,6 +38,9 @@ const (
 	ExitCancelled           = 8
 	ExitTimeout             = 9
 	ExitAwaitError          = 10 // a provider needs to await an operation
+	ExitResourceChanges     = 11 // pulumi preview --detailed-exitcode: resources would change
+	ExitStackOutputChanges  = 12 // pulumi preview --detailed-exitcode: stack outputs but no resources would change
+	ExitStateChanges        = 13 // pulumi preview --detailed-exitcode: only other state would change
 	ExitInternalError       = 255
 )
 
@@ -85,6 +88,19 @@ func ExitCodeFor(err error) int {
 	// so that the dedicated exit code wins.
 	if _, ok := errors.AsType[*plugin.AwaitError](result.UnwrapBail(err)); ok {
 		return ExitAwaitError
+	}
+
+	// `pulumi preview --detailed-exitcode` reports what an update would change. Checked before the bail branch
+	// because processCmdErrors wraps these in a BailError, as the preview already displayed its result.
+	if e, ok := errors.AsType[backenderr.PreviewChangesError](result.UnwrapBail(err)); ok {
+		switch e.Kind {
+		case backenderr.PreviewResourceChanges:
+			return ExitResourceChanges
+		case backenderr.PreviewStackOutputChanges:
+			return ExitStackOutputChanges
+		case backenderr.PreviewStateChanges:
+			return ExitStateChanges
+		}
 	}
 
 	// Respect bail semantics first – still a failure, but don't print anything.

@@ -128,6 +128,45 @@ func TestProcessCmdErrorsPrintsAgentClaimWarningForNonLoginError(t *testing.T) {
 	assert.Contains(t, output.String(), "CLAIM_URL=https://app.pulumi.com/claim/non-login-error")
 }
 
+func TestProcessCmdErrorsPrintsAgentClaimWarningForPreviewChanges(t *testing.T) {
+	oldAgentCreds, err := workspace.GetAgentStoredCredentials()
+	require.NoError(t, err)
+	oldAgentClaim, err := workspace.GetAgentClaim()
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, workspace.DeleteAgentCredentials())
+		require.NoError(t, workspace.StoreAgentCredentials(oldAgentCreds))
+		if oldAgentClaim.ClaimURL != "" {
+			require.NoError(t, workspace.StoreAgentClaim(oldAgentClaim))
+		}
+	})
+
+	t.Setenv("CODEX_SANDBOX", "1")
+	cloudURL := "https://api.preview-changes.example.com"
+	expiresAt := time.Now().Add(time.Hour)
+	err = workspace.StoreAgentAccount(cloudURL, workspace.Account{
+		AccessToken: "agent-token",
+		TokenInformation: &workspace.TokenInformation{
+			ExpiresAt: &expiresAt,
+		},
+	}, true)
+	require.NoError(t, err)
+	err = workspace.StoreAgentClaim(workspace.AgentClaim{
+		ClaimURL:   "https://app.pulumi.com/claim/preview-changes",
+		CloudURL:   cloudURL,
+		ValidUntil: time.Now().Add(24 * time.Hour),
+	})
+	require.NoError(t, err)
+	ctx := httpstate.ContextWithAgentCredentialUse(t.Context())
+	httpstate.MarkAgentCredentialsUsed(ctx, cloudURL)
+
+	var output bytes.Buffer
+	err = processCmdErrors(ctx, backenderr.PreviewChangesError{Kind: backenderr.PreviewResourceChanges}, &output)
+
+	assert.True(t, result.IsBail(err))
+	assert.Contains(t, output.String(), "CLAIM_URL=https://app.pulumi.com/claim/preview-changes")
+}
+
 func TestProcessCmdErrorsDoesNotPrintClaimURLForUnauthorizedClaimedAccount(t *testing.T) {
 	oldAgentCreds, err := workspace.GetAgentStoredCredentials()
 	require.NoError(t, err)
