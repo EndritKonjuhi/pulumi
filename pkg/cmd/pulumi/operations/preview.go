@@ -34,6 +34,7 @@ import (
 	"github.com/pulumi/pulumi/pkg/v3/backend/display"
 	"github.com/pulumi/pulumi/pkg/v3/cmd/pulumi/autonaming"
 	cmdBackend "github.com/pulumi/pulumi/pkg/v3/cmd/pulumi/backend"
+	cmdCmd "github.com/pulumi/pulumi/pkg/v3/cmd/pulumi/cmd"
 	"github.com/pulumi/pulumi/pkg/v3/cmd/pulumi/config"
 	"github.com/pulumi/pulumi/pkg/v3/cmd/pulumi/constrictor"
 	"github.com/pulumi/pulumi/pkg/v3/cmd/pulumi/deployment"
@@ -46,6 +47,7 @@ import (
 	"github.com/pulumi/pulumi/pkg/v3/resource/deploy/providers"
 	"github.com/pulumi/pulumi/pkg/v3/resource/plugin"
 	"github.com/pulumi/pulumi/pkg/v3/resource/stack"
+	pkgSecrets "github.com/pulumi/pulumi/pkg/v3/secrets"
 	pkgWorkspace "github.com/pulumi/pulumi/pkg/v3/workspace"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/diag"
@@ -302,9 +304,37 @@ func buildImportFile(
 	})
 }
 
+// previewChangesError returns the error that sets the exit code of `pulumi preview --detailed-exitcode` for the most
+// important kind of change that the preview found, or nil if it found none.
+func previewChangesError(
+	ctx context.Context, s backend.Stack, sm pkgSecrets.Manager,
+	resourceChanges bool, previewChanges engine.PreviewChanges,
+) error {
+	switch {
+	case resourceChanges:
+		return backenderr.PreviewChangesError{Kind: backenderr.PreviewResourceChanges}
+	case previewChanges.StackOutputs:
+		return backenderr.PreviewChangesError{Kind: backenderr.PreviewStackOutputChanges}
+	case previewChanges.State:
+		return backenderr.PreviewChangesError{Kind: backenderr.PreviewStateChanges}
+	}
+
+	// An update stores the secrets manager of the stack configuration unless the state already has a compatible one.
+	// Only the CLI knows the secrets manager of the stack configuration, so the engine cannot find this change.
+	snap, err := s.Snapshot(ctx, cmdBackend.SecretsProvider(cmdBackend.DefaultLoginManager))
+	if err != nil {
+		return err
+	}
+	if snap != nil && !pkgSecrets.AreCompatible(sm, snap.SecretsManager) {
+		return backenderr.PreviewChangesError{Kind: backenderr.PreviewStateChanges}
+	}
+	return nil
+}
+
 func NewPreviewCmd() *cobra.Command {
 	var debug bool
 	var expectNop bool
+	var detailedExitCode bool
 	var message string
 	var coherenceWindow string
 	var execKind string
@@ -445,6 +475,9 @@ func NewPreviewCmd() *cobra.Command {
 			}
 
 			if remoteArgs.Remote {
+				if detailedExitCode {
+					return cmdCmd.ConfigurationError{Message: "--detailed-exitcode is not supported with --remote"}
+				}
 				err := deployment.ValidateUnsupportedRemoteFlags(expectNop, configArray, configPath, client, jsonDisplay,
 					policyPackPaths, policyPackConfigPaths, refresh, showConfig, showPolicyRemediations, showPolicyExceptions,
 					showReplacementSteps, showSames, showReads, suppressOutputs, "default", &targets, nil, replaces,
@@ -603,6 +636,10 @@ func NewPreviewCmd() *cobra.Command {
 				},
 				Display: displayOpts,
 			}
+			var previewChanges engine.PreviewChanges
+			if detailedExitCode {
+				opts.Engine.PreviewChanges = &previewChanges
+			}
 
 			// If we're building an import file we want to hook the event stream from the engine to transform
 			// create operations into import specs.
@@ -679,6 +716,9 @@ func NewPreviewCmd() *cobra.Command {
 						return err
 					}
 				}
+				if detailedExitCode {
+					return previewChangesError(ctx, s, sm, engine.HasChanges(changes), previewChanges)
+				}
 				return nil
 			}
 		},
@@ -699,6 +739,11 @@ func NewPreviewCmd() *cobra.Command {
 	cmd.PersistentFlags().BoolVar(
 		&expectNop, "expect-no-changes", false,
 		"Return an error if any changes are proposed by this preview")
+	cmd.PersistentFlags().BoolVar(
+		&detailedExitCode, "detailed-exitcode", false,
+		"After a successful preview, exit with code 11 if resources would change, 12 if stack outputs but no"+
+			" resources would change, 13 if only other state would change, or 0 if nothing would change;"+
+			" --expect-no-changes takes precedence")
 	cmd.PersistentFlags().StringVarP(
 		&stackName, "stack", "s", "",
 		"The name of the stack to operate on. Defaults to the current stack")

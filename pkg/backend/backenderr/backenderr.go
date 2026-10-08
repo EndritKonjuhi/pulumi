@@ -255,6 +255,25 @@ func (e NoChangesExpectedError) Error() string {
 	return fmt.Sprintf("no changes were expected for %s but changes were proposed", e.Operation)
 }
 
+// PreviewChangeKind is a kind of change that a preview can find, from the most to the least important.
+type PreviewChangeKind string
+
+const (
+	PreviewResourceChanges    PreviewChangeKind = "resource changes"
+	PreviewStackOutputChanges PreviewChangeKind = "stack output changes"
+	PreviewStateChanges       PreviewChangeKind = "state changes"
+)
+
+// PreviewChangesError reports the most important kind of change that `pulumi preview --detailed-exitcode` found.
+// The preview itself succeeded, so the CLI prints nothing for this error and only sets the exit code.
+type PreviewChangesError struct {
+	Kind PreviewChangeKind
+}
+
+func (e PreviewChangesError) Error() string {
+	return "the preview found " + string(e.Kind)
+}
+
 func (LoginRequiredError) Is(other error) bool {
 	switch other.(type) {
 	case LoginRequiredError, *LoginRequiredError,

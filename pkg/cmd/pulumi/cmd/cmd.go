@@ -80,6 +80,11 @@ func processCmdErrors(ctx context.Context, err error, stderr io.Writer) error {
 		return result.BailError(err)
 	}
 
+	if _, ok := errors.AsType[backenderr.PreviewChangesError](err); ok {
+		agentauth.MaybePrintClaimWarning(ctx, stderr)
+		return result.BailError(err)
+	}
+
 	if isAuthRequiredError(err) {
 		if message := agentauth.AuthRequiredMessage(ctx, time.Now()); message != "" {
 			_, printErr := fmt.Fprint(stderr, message)

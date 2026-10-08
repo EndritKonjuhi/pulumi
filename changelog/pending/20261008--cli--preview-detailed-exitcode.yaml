@@ -1,0 +1,4 @@
+component: cli
+kind: feat
+body: Add `--detailed-exitcode` to `pulumi preview` to report through the exit code whether `pulumi up` would change resources, stack outputs or other state
+time: 2026-10-08T00:00:00Z

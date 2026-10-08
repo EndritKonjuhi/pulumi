@@ -15,14 +15,22 @@
 package operations
 
 import (
+	"context"
+	"io"
 	"testing"
 
 	pkgresource "github.com/pulumi/pulumi/pkg/v3/resource"
 
 	"github.com/gofrs/uuid"
+	"github.com/pulumi/pulumi/pkg/v3/backend"
+	"github.com/pulumi/pulumi/pkg/v3/backend/backenderr"
+	cmdCmd "github.com/pulumi/pulumi/pkg/v3/cmd/pulumi/cmd"
 	"github.com/pulumi/pulumi/pkg/v3/display"
 	"github.com/pulumi/pulumi/pkg/v3/engine"
 	"github.com/pulumi/pulumi/pkg/v3/resource/deploy"
+	"github.com/pulumi/pulumi/pkg/v3/secrets"
+	"github.com/pulumi/pulumi/pkg/v3/secrets/b64"
+	"github.com/pulumi/pulumi/pkg/v3/secrets/passphrase"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/providers"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	sdkconfig "github.com/pulumi/pulumi/sdk/v3/go/common/resource/config"
@@ -827,4 +835,76 @@ func TestBuildImportFile_regress_24056(t *testing.T) {
 	// And each alias must resolve to the correct parent URN in the name table.
 	assert.Equal(t, parentA.URN, importFile.NameTable[parentAliasA])
 	assert.Equal(t, parentB.URN, importFile.NameTable[parentAliasB])
+}
+
+func TestPreviewChangesError(t *testing.T) {
+	t.Parallel()
+
+	stackManager := b64.NewBase64SecretsManager()
+	_, otherManager, err := passphrase.NewPassphraseSecretsManager("password")
+	require.NoError(t, err)
+
+	cases := []struct {
+		name            string
+		resourceChanges bool
+		previewChanges  engine.PreviewChanges
+		stateManager    secrets.Manager
+		want            error
+	}{
+		{
+			name:         "nothing",
+			stateManager: stackManager,
+		},
+		{
+			name:            "resources",
+			resourceChanges: true,
+			previewChanges:  engine.PreviewChanges{StackOutputs: true, State: true},
+			stateManager:    otherManager,
+			want:            backenderr.PreviewChangesError{Kind: backenderr.PreviewResourceChanges},
+		},
+		{
+			name:           "stack outputs",
+			previewChanges: engine.PreviewChanges{StackOutputs: true, State: true},
+			stateManager:   otherManager,
+			want:           backenderr.PreviewChangesError{Kind: backenderr.PreviewStackOutputChanges},
+		},
+		{
+			name:           "state",
+			previewChanges: engine.PreviewChanges{State: true},
+			stateManager:   otherManager,
+			want:           backenderr.PreviewChangesError{Kind: backenderr.PreviewStateChanges},
+		},
+		{
+			name:         "secrets manager",
+			stateManager: otherManager,
+			want:         backenderr.PreviewChangesError{Kind: backenderr.PreviewStateChanges},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			s := &backend.MockStack{
+				SnapshotF: func(context.Context, secrets.Provider) (*deploy.Snapshot, error) {
+					return &deploy.Snapshot{SecretsManager: tc.stateManager}, nil
+				},
+			}
+			err := previewChangesError(t.Context(), s, stackManager, tc.resourceChanges, tc.previewChanges)
+			assert.Equal(t, tc.want, err)
+		})
+	}
+}
+
+func TestPreviewCmdRejectsDetailedExitCodeWithRemote(t *testing.T) {
+	t.Setenv("PULUMI_EXPERIMENTAL", "true")
+
+	cmd := NewPreviewCmd()
+	cmd.SetArgs([]string{"--remote", "--detailed-exitcode"})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+
+	err := cmd.Execute()
+	assert.Equal(t, cmdCmd.ConfigurationError{Message: "--detailed-exitcode is not supported with --remote"}, err)
+	assert.Equal(t, cmdCmd.ExitConfigurationError, cmdCmd.ExitCodeFor(err))
 }
