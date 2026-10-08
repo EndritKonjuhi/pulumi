@@ -385,7 +385,7 @@ func TestSamesWithOtherMeaningfulChanges(t *testing.T) {
 	resourceP := NewResource(aUniqueUrnResourceP)
 	resourceA := NewResource(aUniqueUrnResourceA)
 
-	changes := slice.Prealloc[*pkgresource.State](4)
+	changes := slice.Prealloc[*pkgresource.State](5)
 
 	// Change the "custom" bit.
 	changes = append(changes, NewResource(resourceA.URN))
@@ -406,6 +406,10 @@ func TestSamesWithOtherMeaningfulChanges(t *testing.T) {
 	// Change the resource outputs.
 	changes = append(changes, NewResource(resourceA.URN))
 	changes[3].Outputs = resource.PropertyMap{"foo": resource.NewProperty("bar")}
+
+	// Change the property dependencies.
+	changes = append(changes, NewResource(resourceA.URN))
+	changes[4].PropertyDependencies = map[resource.PropertyKey][]resource.URN{"foo": {resourceP.URN}}
 
 	snap := NewSnapshot([]*pkgresource.State{
 		provider,

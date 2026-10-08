@@ -19,7 +19,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -139,7 +138,7 @@ func (sm *SnapshotManager) Close() error {
 //
 // The mutator may indicate that its corresponding checkpoint write may be safely elided by
 // returning `false`. As of this writing, we only elide writes after same steps with no
-// meaningful changes (see sameSnapshotMutation.mustWrite for details). Any elided writes
+// meaningful changes (see engine.SameStepMustWrite for details). Any elided writes
 // are flushed by the next non-elided write or the next call to Close.
 //
 // You should never observe or mutate the global snapshot without using this function unless
@@ -327,146 +326,6 @@ type sameSnapshotMutation struct {
 	manager *SnapshotManager
 }
 
-// mustWrite returns true if any semantically meaningful difference exists between the old and new states of a same
-// step that forces us to write the checkpoint. If no such difference exists, the checkpoint write that corresponds to
-// this step can be elided.
-func (ssm *sameSnapshotMutation) mustWrite(step deploy.Step) bool {
-	old := step.Old()
-	new := step.New()
-
-	contract.Assertf(old.Delete == new.Delete,
-		"either both or neither resource must be pending deletion, got %v (old) != %v (new)",
-		old.Delete, new.Delete)
-	contract.Assertf(old.External == new.External,
-		"either both or neither resource must be external, got %v (old) != %v (new)",
-		old.External, new.External)
-
-	if sameStep, isSameStep := step.(*deploy.SameStep); isSameStep {
-		contract.Assertf(!sameStep.IsSkippedCreate(), "create cannot be skipped for SameStep")
-	}
-
-	// If the URN of this resource has changed, we must write the checkpoint. This should only be possible when a
-	// resource is aliased.
-	if old.URN != new.URN {
-		logging.V(9).Infof("SnapshotManager: mustWrite() true because of URN")
-		return true
-	}
-
-	// If the type of this resource has changed, we must write the checkpoint. This should only be possible when a
-	// resource is aliased.
-	if old.Type != new.Type {
-		logging.V(9).Infof("SnapshotManager: mustWrite() true because of Type")
-		return true
-	}
-
-	// If the kind of this resource has changed, we must write the checkpoint.
-	if old.Custom != new.Custom {
-		logging.V(9).Infof("SnapshotManager: mustWrite() true because of Custom")
-		return true
-	}
-
-	// We need to persist the changes if CustomTimes have changed
-	if old.CustomTimeouts != new.CustomTimeouts {
-		logging.V(9).Infof("SnapshotManager: mustWrite() true because of CustomTimeouts")
-		return true
-	}
-
-	// We need to persist the changes if CustomTimes have changed
-	if old.RetainOnDelete != new.RetainOnDelete {
-		logging.V(9).Infof("SnapshotManager: mustWrite() true because of RetainOnDelete")
-		return true
-	}
-
-	contract.Assertf(old.ID == new.ID,
-		"old and new resource IDs must be equal, got %v (old) != %v (new)", old.ID, new.ID)
-
-	// If this resource's provider has changed, we must write the checkpoint. This can happen in scenarios involving
-	// aliased providers or upgrades to default providers.
-	if old.Provider != new.Provider {
-		logging.V(9).Infof("SnapshotManager: mustWrite() true because of Provider")
-		return true
-	}
-
-	// If this resource's parent has changed, we must write the checkpoint.
-	if old.Parent != new.Parent {
-		logging.V(9).Infof("SnapshotManager: mustWrite() true because of Parent")
-		return true
-	}
-
-	// If the DeletedWith attribute of this resource has changed, we must write the checkpoint.
-	if old.DeletedWith != new.DeletedWith {
-		logging.V(9).Infof("SnapshotManager: mustWrite() true because of DeletedWith")
-		return true
-	}
-
-	// If the ReplaceWith attribute of this resource has changed, we must write the checkpoint.
-	if len(old.ReplaceWith) != len(new.ReplaceWith) {
-		logging.V(9).Infof("SnapshotManager: mustWrite() true because of ReplaceWith")
-		return true
-	}
-
-	for i, replaceWith := range old.ReplaceWith {
-		if replaceWith != new.ReplaceWith[i] {
-			logging.V(9).Infof("SnapshotManager: mustWrite() true because of ReplaceWith")
-			return true
-		}
-	}
-
-	// If the protection attribute of this resource has changed, we must write the checkpoint.
-	if old.Protect != new.Protect {
-		logging.V(9).Infof("SnapshotManager: mustWrite() true because of Protect")
-		return true
-	}
-
-	// If the inputs or outputs of this resource have changed, we must write the checkpoint. Note that it is possible
-	// for the inputs of a "same" resource to have changed even if the contents of the input bags are different if the
-	// resource's provider deems the physical change to be semantically irrelevant.
-	if !old.Inputs.DeepEquals(new.Inputs) {
-		logging.V(9).Infof("SnapshotManager: mustWrite() true because of Inputs")
-		return true
-	}
-	if !old.Outputs.DeepEquals(new.Outputs) {
-		logging.V(9).Infof("SnapshotManager: mustWrite() true because of Outputs")
-		return true
-	}
-
-	// reflect.DeepEqual does not treat `nil` and `[]URN{}` as equal, so we must check for both
-	// lists being empty ourselves.
-	if len(old.Dependencies) != 0 || len(new.Dependencies) != 0 {
-		// Sort dependencies before comparing them. If the dependencies have changed, we must write the checkpoint.
-		sortDeps := func(deps []resource.URN) []resource.URN {
-			result := make([]resource.URN, len(deps))
-			copy(result, deps)
-			slices.Sort(result)
-			return result
-		}
-		oldDeps := sortDeps(old.Dependencies)
-		newDeps := sortDeps(new.Dependencies)
-		if !reflect.DeepEqual(oldDeps, newDeps) {
-			logging.V(9).Infof("SnapshotManager: mustWrite() true because of Dependencies")
-			return true
-		}
-	}
-
-	if !reflect.DeepEqual(old.ResourceHooks, new.ResourceHooks) {
-		logging.V(9).Infof("SnapshotManager: mustWrite() true because of ResourceHooks")
-		return true
-	}
-
-	if !old.ReplacementTrigger.Equals(new.ReplacementTrigger) {
-		logging.V(9).Infof("SnapshotManager: mustWrite() true because of ReplacementTrigger")
-		return true
-	}
-
-	// Init errors are strictly advisory, so we do not consider them when deciding whether or not to write the
-	// checkpoint. Likewise source positions are purely metadata and do not affect the system correctness, so
-	// for performance we elide those as well. This prevents _every_ resource needing a snapshot write when
-	// making large source code changes.
-
-	logging.V(9).Infof("SnapshotManager: mustWrite() false")
-	return false
-}
-
 func (ssm *sameSnapshotMutation) End(step deploy.Step, successful bool) error {
 	contract.Requiref(step != nil, "step", "must not be nil")
 	contract.Requiref(step.Op() == deploy.OpSame, "step.Op()", "must be %q, got %q", deploy.OpSame, step.Op())
@@ -491,9 +350,9 @@ func (ssm *sameSnapshotMutation) End(step deploy.Step, successful bool) error {
 			// Note that "Same" steps only consider input and provider diffs, so it is possible to see a same step for a
 			// resource with new dependencies, outputs, parent, protection. etc.
 			//
-			// As such, we diff all of the non-input properties of the resource here and write the snapshot if we find any
-			// changes.
-			if !ssm.mustWrite(step) {
+			// As such, we write the snapshot if engine.SameStepMustWrite finds a meaningful difference between the old
+			// and new states.
+			if !engine.SameStepMustWrite(step) {
 				logging.V(9).Infof("SnapshotManager: sameSnapshotMutation.End() eliding write")
 				return false
 			}
