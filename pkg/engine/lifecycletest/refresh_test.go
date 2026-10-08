@@ -3778,3 +3778,47 @@ func TestRefreshV2PropertyDependencyOrdering(t *testing.T) {
 		p.GetProject(), p.GetTarget(t, snap), lt.TestUpdateOptions{T: t, HostF: hostF}, false, p.BackendClient, nil, "0")
 	require.NoError(t, err)
 }
+
+// TestUpdateWithRefreshElidesUnchangedSameWrites tests that an update with a refresh does not need to write a
+// checkpoint for an unchanged resource, although rebuilding the base state drops its empty property dependency lists.
+func TestUpdateWithRefreshElidesUnchangedSameWrites(t *testing.T) {
+	t.Parallel()
+
+	loaders := []*deploytest.ProviderLoader{
+		deploytest.NewProviderLoader("pkgA", semver.MustParse("1.0.0"), func() (plugin.Provider, error) {
+			return &deploytest.Provider{}, nil
+		}),
+	}
+	programF := deploytest.NewLanguageRuntimeF(func(_ plugin.RunInfo, monitor *deploytest.ResourceMonitor) error {
+		_, err := monitor.RegisterResource("pkgA:m:typA", "resA", true, deploytest.ResourceOptions{
+			Inputs: property.NewMap(map[string]property.Value{"foo": property.New("bar")}),
+		})
+		return err
+	})
+	p := &lt.TestPlan{
+		Options: lt.TestUpdateOptions{
+			T:                t,
+			HostF:            deploytest.NewPluginHostF(nil, nil, programF, nil, nil, loaders...),
+			SkipDisplayTests: true,
+		},
+	}
+
+	snap, err := lt.TestOp(Update).
+		RunStep(p.GetProject(), p.GetTarget(t, nil), p.Options, false, p.BackendClient, nil, "0")
+	require.NoError(t, err)
+
+	p.Options.Refresh = true
+	sawResA := false
+	_, err = lt.TestOp(Update).RunStep(p.GetProject(), p.GetTarget(t, snap), p.Options, false, p.BackendClient,
+		func(_ workspace.Project, _ deploy.Target, entries JournalEntries, _ []Event, err error) error {
+			for _, entry := range entries {
+				if entry.Kind == TestJournalEntrySuccess && entry.Step.Op() == deploy.OpSame {
+					sawResA = sawResA || entry.Step.URN().Name() == "resA"
+					assert.False(t, SameStepMustWrite(entry.Step), "%v", entry.Step.URN())
+				}
+			}
+			return err
+		}, "1")
+	require.NoError(t, err)
+	assert.True(t, sawResA)
+}

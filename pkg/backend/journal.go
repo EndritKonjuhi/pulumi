@@ -703,7 +703,7 @@ type SnapshotJournaler struct {
 //
 // Each journal entry may indicate that its corresponding checkpoint write may be safely elided by
 // setting the `ElideWrite` field. As of this writing, we only elide writes after same steps with no
-// meaningful changes (see sameSnapshotMutation.mustWrite for details). Any elided writes
+// meaningful changes (see engine.SameStepMustWrite for details). Any elided writes
 // are flushed by the next non-elided write or the next call to Close.
 func NewSnapshotJournaler(
 	ctx context.Context,
@@ -853,7 +853,7 @@ type JournalPersister interface {
 //
 // Each journal entry may indicate that its corresponding checkpoint write may be safely elided by
 // setting the `ElideWrite` field. As of this writing, we only elide writes after same steps with no
-// meaningful changes (see sameSnapshotMutation.mustWrite for details). Any elided writes
+// meaningful changes (see engine.SameStepMustWrite for details). Any elided writes
 // are flushed by the next non-elided write or the next call to Close.
 func NewJournaler(
 	ctx context.Context,

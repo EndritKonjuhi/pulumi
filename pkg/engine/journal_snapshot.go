@@ -15,6 +15,7 @@
 package engine
 
 import (
+	"cmp"
 	"reflect"
 	"slices"
 	"sync"
@@ -27,6 +28,7 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/logging"
+	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi-internal/gsync"
 )
 
@@ -485,10 +487,11 @@ type sameSnapshotMutation struct {
 	operationID int64
 }
 
-// mustWrite returns true if any semantically meaningful difference exists between the old and new states of a same
-// step that forces us to write the checkpoint. If no such difference exists, the checkpoint write that corresponds to
-// this step can be elided.
-func (ssm *sameSnapshotMutation) mustWrite(step deploy.Step) bool {
+// SameStepMustWrite returns true if any semantically meaningful difference exists between the old and new states of a
+// same step that forces us to write the checkpoint. If no such difference exists, the checkpoint write that
+// corresponds to this step can be elided. It panics if step is a skipped create, or if its old and new states differ
+// in Delete, External or ID, so call it only after the step has been applied.
+func SameStepMustWrite(step deploy.Step) bool {
 	old := step.Old()
 	new := step.New()
 
@@ -506,32 +509,32 @@ func (ssm *sameSnapshotMutation) mustWrite(step deploy.Step) bool {
 	// If the URN of this resource has changed, we must write the checkpoint. This should only be possible when a
 	// resource is aliased.
 	if old.URN != new.URN {
-		logging.V(9).Infof("SnapshotManager: mustWrite() true because of URN")
+		logging.V(9).Infof("SameStepMustWrite() true because of URN")
 		return true
 	}
 
 	// If the type of this resource has changed, we must write the checkpoint. This should only be possible when a
 	// resource is aliased.
 	if old.Type != new.Type {
-		logging.V(9).Infof("SnapshotManager: mustWrite() true because of Type")
+		logging.V(9).Infof("SameStepMustWrite() true because of Type")
 		return true
 	}
 
 	// If the kind of this resource has changed, we must write the checkpoint.
 	if old.Custom != new.Custom {
-		logging.V(9).Infof("SnapshotManager: mustWrite() true because of Custom")
+		logging.V(9).Infof("SameStepMustWrite() true because of Custom")
 		return true
 	}
 
 	// We need to persist the changes if CustomTimeouts have changed
 	if old.CustomTimeouts != new.CustomTimeouts {
-		logging.V(9).Infof("SnapshotManager: mustWrite() true because of CustomTimeouts")
+		logging.V(9).Infof("SameStepMustWrite() true because of CustomTimeouts")
 		return true
 	}
 
 	// We need to persist the changes if RetainOnDelete has changed
 	if old.RetainOnDelete != new.RetainOnDelete {
-		logging.V(9).Infof("SnapshotManager: mustWrite() true because of RetainOnDelete")
+		logging.V(9).Infof("SameStepMustWrite() true because of RetainOnDelete")
 		return true
 	}
 
@@ -541,37 +544,37 @@ func (ssm *sameSnapshotMutation) mustWrite(step deploy.Step) bool {
 	// If this resource's provider has changed, we must write the checkpoint. This can happen in scenarios involving
 	// aliased providers or upgrades to default providers.
 	if old.Provider != new.Provider {
-		logging.V(9).Infof("SnapshotManager: mustWrite() true because of Provider")
+		logging.V(9).Infof("SameStepMustWrite() true because of Provider")
 		return true
 	}
 
 	// If this resource's parent has changed, we must write the checkpoint.
 	if old.Parent != new.Parent {
-		logging.V(9).Infof("SnapshotManager: mustWrite() true because of Parent")
+		logging.V(9).Infof("SameStepMustWrite() true because of Parent")
 		return true
 	}
 
 	// If the DeletedWith attribute of this resource has changed, we must write the checkpoint.
 	if old.DeletedWith != new.DeletedWith {
-		logging.V(9).Infof("SnapshotManager: mustWrite() true because of DeletedWith")
+		logging.V(9).Infof("SameStepMustWrite() true because of DeletedWith")
 		return true
 	}
 
 	// If the ReplaceWith attribute of this resource has changed, we must write the checkpoint.
 	if len(old.ReplaceWith) != len(new.ReplaceWith) {
-		logging.V(9).Infof("SnapshotManager: mustWrite() true because of ReplaceWith")
+		logging.V(9).Infof("SameStepMustWrite() true because of ReplaceWith")
 		return true
 	}
 	for i, replaceWith := range old.ReplaceWith {
 		if replaceWith != new.ReplaceWith[i] {
-			logging.V(9).Infof("SnapshotManager: mustWrite() true because of ReplaceWith")
+			logging.V(9).Infof("SameStepMustWrite() true because of ReplaceWith")
 			return true
 		}
 	}
 
 	// If the protection attribute of this resource has changed, we must write the checkpoint.
 	if old.Protect != new.Protect {
-		logging.V(9).Infof("SnapshotManager: mustWrite() true because of Protect")
+		logging.V(9).Infof("SameStepMustWrite() true because of Protect")
 		return true
 	}
 
@@ -579,52 +582,106 @@ func (ssm *sameSnapshotMutation) mustWrite(step deploy.Step) bool {
 	// for the inputs of a "same" resource to have changed even if the contents of the input bags are different if the
 	// resource's provider deems the physical change to be semantically irrelevant.
 	if !old.Inputs.DeepEquals(new.Inputs) {
-		logging.V(9).Infof("SnapshotManager: mustWrite() true because of Inputs")
+		logging.V(9).Infof("SameStepMustWrite() true because of Inputs")
 		return true
 	}
 	if !old.Outputs.DeepEquals(new.Outputs) {
-		logging.V(9).Infof("SnapshotManager: mustWrite() true because of Outputs")
+		logging.V(9).Infof("SameStepMustWrite() true because of Outputs")
 		return true
 	}
 
-	// reflect.DeepEqual does not treat `nil` and `[]URN{}` as equal, so we must check for both
-	// lists being empty ourselves.
-	if len(old.Dependencies) != 0 || len(new.Dependencies) != 0 {
-		// Sort dependencies before comparing them. If the dependencies have changed, we must write the checkpoint.
-		sortDeps := func(deps []resource.URN) []resource.URN {
-			result := make([]resource.URN, len(deps))
-			copy(result, deps)
-			slices.Sort(result)
-			return result
-		}
-		oldDeps := sortDeps(old.Dependencies)
-		newDeps := sortDeps(new.Dependencies)
-		if !reflect.DeepEqual(oldDeps, newDeps) {
-			logging.V(9).Infof("SnapshotManager: mustWrite() true because of Dependencies")
-			return true
-		}
-	}
-
-	if len(old.PropertyDependencies) != len(new.PropertyDependencies) {
-		logging.V(9).Infof("SnapshotManager: mustWrite() true because of PropertyDependencies")
+	// The engine builds dependency lists from sets, so the order of their URNs carries no meaning. If the dependencies
+	// have changed, we must write the checkpoint.
+	if !sameElements(old.Dependencies, new.Dependencies) {
+		logging.V(9).Infof("SameStepMustWrite() true because of Dependencies")
 		return true
 	}
 
-	for key, oldDeps := range old.PropertyDependencies {
-		newDeps, ok := new.PropertyDependencies[key]
-		if !ok {
-			logging.V(9).Infof("SnapshotManager: mustWrite() true because of PropertyDependencies")
-			return true
+	// A key with an empty list has no dependencies, the same as a missing key. Rebuilding the base state after a
+	// refresh drops such keys, and the program registers them again.
+	differsOnKeysOf := func(keys, other map[resource.PropertyKey][]resource.URN) bool {
+		for key, deps := range keys {
+			if !sameElements(deps, other[key]) {
+				return true
+			}
 		}
-		if (len(oldDeps) > 0 || len(newDeps) > 0) &&
-			!reflect.DeepEqual(oldDeps, newDeps) {
-			logging.V(9).Infof("SnapshotManager: mustWrite() true because of PropertyDependencies")
-			return true
-		}
+		return false
+	}
+	if differsOnKeysOf(old.PropertyDependencies, new.PropertyDependencies) ||
+		differsOnKeysOf(new.PropertyDependencies, old.PropertyDependencies) {
+		logging.V(9).Infof("SameStepMustWrite() true because of PropertyDependencies")
+		return true
 	}
 
 	if !reflect.DeepEqual(old.ResourceHooks, new.ResourceHooks) {
-		logging.V(9).Infof("SnapshotManager: mustWrite() true because of ResourceHooks")
+		logging.V(9).Infof("SameStepMustWrite() true because of ResourceHooks")
+		return true
+	}
+
+	// The state does not store the dependencies of the trigger, so they must not count as a change.
+	if !withoutDependencies(old.ReplacementTrigger).Equals(withoutDependencies(new.ReplacementTrigger)) {
+		logging.V(9).Infof("SameStepMustWrite() true because of ReplacementTrigger")
+		return true
+	}
+
+	if old.Taint != new.Taint {
+		logging.V(9).Infof("SameStepMustWrite() true because of Taint")
+		return true
+	}
+
+	if old.PendingReplacement != new.PendingReplacement {
+		logging.V(9).Infof("SameStepMustWrite() true because of PendingReplacement")
+		return true
+	}
+
+	if old.RefreshBeforeUpdate != new.RefreshBeforeUpdate {
+		logging.V(9).Infof("SameStepMustWrite() true because of RefreshBeforeUpdate")
+		return true
+	}
+
+	if old.ExtensionRef != new.ExtensionRef {
+		logging.V(9).Infof("SameStepMustWrite() true because of ExtensionRef")
+		return true
+	}
+
+	if old.ImportID != new.ImportID {
+		logging.V(9).Infof("SameStepMustWrite() true because of ImportID")
+		return true
+	}
+
+	if old.ViewOf != new.ViewOf {
+		logging.V(9).Infof("SameStepMustWrite() true because of ViewOf")
+		return true
+	}
+
+	if old.SnippetID != new.SnippetID {
+		logging.V(9).Infof("SameStepMustWrite() true because of SnippetID")
+		return true
+	}
+
+	// The order of the elements of these option lists carries no meaning.
+	if !sameElements(old.Aliases, new.Aliases) {
+		logging.V(9).Infof("SameStepMustWrite() true because of Aliases")
+		return true
+	}
+
+	if !sameElements(old.AdditionalSecretOutputs, new.AdditionalSecretOutputs) {
+		logging.V(9).Infof("SameStepMustWrite() true because of AdditionalSecretOutputs")
+		return true
+	}
+
+	if !sameElements(old.IgnoreChanges, new.IgnoreChanges) {
+		logging.V(9).Infof("SameStepMustWrite() true because of IgnoreChanges")
+		return true
+	}
+
+	if !sameElements(old.ReplaceOnChanges, new.ReplaceOnChanges) {
+		logging.V(9).Infof("SameStepMustWrite() true because of ReplaceOnChanges")
+		return true
+	}
+
+	if !sameElements(pathStrings(old.HideDiff), pathStrings(new.HideDiff)) {
+		logging.V(9).Infof("SameStepMustWrite() true because of HideDiff")
 		return true
 	}
 
@@ -633,8 +690,41 @@ func (ssm *sameSnapshotMutation) mustWrite(step deploy.Step) bool {
 	// for performance we elide those as well. This prevents _every_ resource needing a snapshot write when
 	// making large source code changes.
 
-	logging.V(9).Infof("SnapshotManager: mustWrite() false")
+	logging.V(9).Infof("SameStepMustWrite() false")
 	return false
+}
+
+func sameElements[T cmp.Ordered](a, b []T) bool {
+	return slices.Equal(slices.Sorted(slices.Values(a)), slices.Sorted(slices.Values(b)))
+}
+
+func pathStrings(paths []resource.PropertyPath) []string {
+	strs := make([]string, len(paths))
+	for i, path := range paths {
+		strs[i] = path.String()
+	}
+	return strs
+}
+
+// withoutDependencies keeps the secret flags, because the state stores them.
+func withoutDependencies(value property.Value) property.Value {
+	value = value.WithDependencies(nil)
+	switch {
+	case value.IsArray():
+		elements := make([]property.Value, 0, value.AsArray().Len())
+		for _, element := range value.AsArray().All {
+			elements = append(elements, withoutDependencies(element))
+		}
+		return property.New(elements).WithSecret(value.Secret())
+	case value.IsMap():
+		entries := make(map[string]property.Value, value.AsMap().Len())
+		for key, entry := range value.AsMap().All {
+			entries[key] = withoutDependencies(entry)
+		}
+		return property.New(entries).WithSecret(value.Secret())
+	default:
+		return value
+	}
 }
 
 func (sm *JournalSnapshotManager) doSame(step deploy.Step, operationID int64) (SnapshotMutation, error) {
@@ -668,7 +758,7 @@ func (ssm *sameSnapshotMutation) End(step deploy.Step, successful bool) error {
 		}
 	}
 
-	if successful && isSameStep && (sameStep.IsSkippedCreate() || !ssm.mustWrite(sameStep)) {
+	if successful && isSameStep && (sameStep.IsSkippedCreate() || !SameStepMustWrite(sameStep)) {
 		journalEntry.ElideWrite = true
 	}
 
