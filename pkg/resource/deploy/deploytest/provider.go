@@ -124,7 +124,7 @@ func (prov *Provider) CheckConfig2(
 	}
 	var failures []plugin.CheckConfigFailure
 	for _, f := range resp.Failures {
-		failures = append(failures, plugin.CheckConfigFailure(f))
+		failures = append(failures, plugin.CheckConfigFailure{Property: f.Property, Reason: f.Reason})
 	}
 	return plugin.CheckConfig2Response{Properties: resp.Properties, Failures: failures}, nil
 }
