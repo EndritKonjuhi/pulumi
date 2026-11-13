@@ -236,6 +236,11 @@ type CheckConfigFailure struct {
 
 	// Remediations are commands the user can run to resolve the failure. Only the CheckConfig2 RPC carries them.
 	Remediations []CommandRemediation
+
+	// Hint is a product hint relevant to the failure, if any, and HintMessage is its text, which the engine shows if
+	// it decides to show the hint.
+	Hint        Hint
+	HintMessage string
 }
 
 type DiffConfigRequest struct {
