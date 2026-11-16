@@ -1,0 +1,4 @@
+component: yaml
+kind: chore
+body: Upgrade yaml to v1.39.1
+time: 2026-11-16T12:30:30.895096653Z
