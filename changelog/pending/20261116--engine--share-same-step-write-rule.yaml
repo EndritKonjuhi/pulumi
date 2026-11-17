@@ -1,0 +1,4 @@
+component: engine
+kind: fix
+body: Stop waiting for journal writes of unchanged resources after a refresh or when their property dependencies come back in a different order
+time: 2026-11-16T00:00:00Z

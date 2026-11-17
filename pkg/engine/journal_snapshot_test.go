@@ -15,16 +15,19 @@
 package engine
 
 import (
+	"reflect"
+	"slices"
 	"testing"
 
 	pkgresource "github.com/pulumi/pulumi/pkg/v3/resource"
 
 	"github.com/pulumi/pulumi/pkg/v3/resource/deploy"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
+	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/stretchr/testify/require"
 )
 
-func TestMustWrite(t *testing.T) {
+func TestSameStepMustWrite(t *testing.T) {
 	t.Parallel()
 
 	defaultURN := resource.URN("urn:pulumi:test::stack::pulumi:providers:aws::default_4_42_0")
@@ -217,6 +220,30 @@ func TestMustWrite(t *testing.T) {
 			mustWrite: true,
 		},
 		{
+			name: "PropertyDependencies key with empty list added - should not write",
+			old: &pkgresource.State{
+				URN:                  defaultURN,
+				PropertyDependencies: map[resource.PropertyKey][]resource.URN{},
+			},
+			new: &pkgresource.State{
+				URN:                  defaultURN,
+				PropertyDependencies: map[resource.PropertyKey][]resource.URN{"prop1": {}},
+			},
+			mustWrite: false,
+		},
+		{
+			name: "PropertyDependencies key with empty list removed - should not write",
+			old: &pkgresource.State{
+				URN:                  defaultURN,
+				PropertyDependencies: map[resource.PropertyKey][]resource.URN{"prop1": {}},
+			},
+			new: &pkgresource.State{
+				URN:                  defaultURN,
+				PropertyDependencies: map[resource.PropertyKey][]resource.URN{},
+			},
+			mustWrite: false,
+		},
+		{
 			name: "PropertyDependencies changed - different dependencies for same property",
 			old: &pkgresource.State{
 				URN: defaultURN,
@@ -242,6 +269,122 @@ func TestMustWrite(t *testing.T) {
 			new: &pkgresource.State{URN: defaultURN, ResourceHooks: map[resource.HookType][]string{
 				resource.BeforeCreate: {"hook2"},
 			}},
+			mustWrite: true,
+		},
+		{
+			name:      "ReplacementTrigger changed",
+			old:       &pkgresource.State{URN: defaultURN, ReplacementTrigger: property.New("trigger1")},
+			new:       &pkgresource.State{URN: defaultURN, ReplacementTrigger: property.New("trigger2")},
+			mustWrite: true,
+		},
+		{
+			name: "PropertyDependencies changed - different order (should not trigger write)",
+			old: &pkgresource.State{URN: defaultURN, PropertyDependencies: map[resource.PropertyKey][]resource.URN{
+				"prop1": {
+					"urn:pulumi:test::stack::pulumi:pulumi:Stack::resource1",
+					"urn:pulumi:test::stack::pulumi:pulumi:Stack::resource2",
+				},
+			}},
+			new: &pkgresource.State{URN: defaultURN, PropertyDependencies: map[resource.PropertyKey][]resource.URN{
+				"prop1": {
+					"urn:pulumi:test::stack::pulumi:pulumi:Stack::resource2",
+					"urn:pulumi:test::stack::pulumi:pulumi:Stack::resource1",
+				},
+			}},
+			mustWrite: false,
+		},
+		{
+			name: "ReplacementTrigger dependencies changed - should not write",
+			old: &pkgresource.State{URN: defaultURN, ReplacementTrigger: property.New("trigger").WithDependencies(
+				[]resource.URN{"urn:pulumi:test::stack::pulumi:pulumi:Stack::resource1"})},
+			new:       &pkgresource.State{URN: defaultURN, ReplacementTrigger: property.New("trigger")},
+			mustWrite: false,
+		},
+		{
+			name:      "ReplacementTrigger secretness changed",
+			old:       &pkgresource.State{URN: defaultURN, ReplacementTrigger: property.New("trigger")},
+			new:       &pkgresource.State{URN: defaultURN, ReplacementTrigger: property.New("trigger").WithSecret(true)},
+			mustWrite: true,
+		},
+		{
+			name:      "Taint changed",
+			old:       &pkgresource.State{URN: defaultURN, Taint: true},
+			new:       &pkgresource.State{URN: defaultURN},
+			mustWrite: true,
+		},
+		{
+			name:      "PendingReplacement changed",
+			old:       &pkgresource.State{URN: defaultURN, PendingReplacement: true},
+			new:       &pkgresource.State{URN: defaultURN},
+			mustWrite: true,
+		},
+		{
+			name:      "RefreshBeforeUpdate changed",
+			old:       &pkgresource.State{URN: defaultURN},
+			new:       &pkgresource.State{URN: defaultURN, RefreshBeforeUpdate: true},
+			mustWrite: true,
+		},
+		{
+			name:      "ExtensionRef changed",
+			old:       &pkgresource.State{URN: defaultURN, ExtensionRef: "ref1"},
+			new:       &pkgresource.State{URN: defaultURN, ExtensionRef: "ref2"},
+			mustWrite: true,
+		},
+		{
+			name:      "ImportID changed",
+			old:       &pkgresource.State{URN: defaultURN, ImportID: "id1"},
+			new:       &pkgresource.State{URN: defaultURN},
+			mustWrite: true,
+		},
+		{
+			name:      "ViewOf changed",
+			old:       &pkgresource.State{URN: defaultURN},
+			new:       &pkgresource.State{URN: defaultURN, ViewOf: "urn:pulumi:test::stack::pulumi:pulumi:Stack::resource1"},
+			mustWrite: true,
+		},
+		{
+			name:      "SnippetID changed",
+			old:       &pkgresource.State{URN: defaultURN, SnippetID: "snippet1"},
+			new:       &pkgresource.State{URN: defaultURN, SnippetID: "snippet2"},
+			mustWrite: true,
+		},
+		{
+			name: "Aliases changed",
+			old:  &pkgresource.State{URN: defaultURN},
+			new: &pkgresource.State{
+				URN:     defaultURN,
+				Aliases: []resource.URN{"urn:pulumi:test::stack::pulumi:pulumi:Stack::old"},
+			},
+			mustWrite: true,
+		},
+		{
+			name:      "AdditionalSecretOutputs changed",
+			old:       &pkgresource.State{URN: defaultURN},
+			new:       &pkgresource.State{URN: defaultURN, AdditionalSecretOutputs: []resource.PropertyKey{"prop1"}},
+			mustWrite: true,
+		},
+		{
+			name:      "IgnoreChanges changed",
+			old:       &pkgresource.State{URN: defaultURN},
+			new:       &pkgresource.State{URN: defaultURN, IgnoreChanges: []string{"prop1"}},
+			mustWrite: true,
+		},
+		{
+			name:      "IgnoreChanges changed - different order (should not trigger write)",
+			old:       &pkgresource.State{URN: defaultURN, IgnoreChanges: []string{"prop1", "prop2"}},
+			new:       &pkgresource.State{URN: defaultURN, IgnoreChanges: []string{"prop2", "prop1"}},
+			mustWrite: false,
+		},
+		{
+			name:      "ReplaceOnChanges changed",
+			old:       &pkgresource.State{URN: defaultURN, ReplaceOnChanges: []string{"prop1"}},
+			new:       &pkgresource.State{URN: defaultURN},
+			mustWrite: true,
+		},
+		{
+			name:      "HideDiff changed",
+			old:       &pkgresource.State{URN: defaultURN},
+			new:       &pkgresource.State{URN: defaultURN, HideDiff: []resource.PropertyPath{{"prop1", 0}}},
 			mustWrite: true,
 		},
 		{
@@ -282,10 +425,33 @@ func TestMustWrite(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			ssm := sameSnapshotMutation{}
 			step := deploy.NewSameStep(nil, nil, tc.old, tc.new)
-			result := ssm.mustWrite(step)
+			result := SameStepMustWrite(step)
 			require.Equal(t, tc.mustWrite, result)
 		})
 	}
+}
+
+// TestSameStepMustWriteCoversEveryField fails when resource.State gets a field that SameStepMustWrite neither compares
+// nor deliberately ignores.
+func TestSameStepMustWriteCoversEveryField(t *testing.T) {
+	t.Parallel()
+
+	compared := []string{
+		"Type", "URN", "Custom", "Inputs", "Outputs", "Parent", "Protect", "Taint", "Dependencies", "Provider",
+		"ExtensionRef", "PropertyDependencies", "PendingReplacement", "AdditionalSecretOutputs", "Aliases",
+		"CustomTimeouts", "ImportID", "RetainOnDelete", "DeletedWith", "ReplaceWith", "IgnoreChanges",
+		"ReplaceOnChanges", "ReplacementTrigger", "HideDiff", "RefreshBeforeUpdate", "ViewOf", "ResourceHooks",
+		"SnippetID",
+		// SameStepMustWrite asserts that these are equal.
+		"Delete", "External", "ID",
+	}
+	ignored := []string{"Lock", "InitErrors", "Created", "Modified", "SourcePosition", "StackTrace"}
+
+	stateType := reflect.TypeFor[pkgresource.State]()
+	fields := make([]string, 0, stateType.NumField())
+	for field := range stateType.Fields() {
+		fields = append(fields, field.Name)
+	}
+	require.ElementsMatch(t, slices.Concat(compared, ignored), fields)
 }
