@@ -496,6 +496,9 @@ type UpdateOptions struct {
 	// UUIDs. A new UUID adds a snippet, an existing UUID replaces that snippet when the value is non-nil, and an
 	// existing UUID with a nil value deletes that snippet.
 	Snippets map[uuid.UUID]*resource.Snippet
+
+	// PreviewChanges, if set, receives the PreviewChanges that a preview finds.
+	PreviewChanges *PreviewChanges
 }
 
 func applySnippetUpdates(base []resource.Snippet, updates map[uuid.UUID]*resource.Snippet) ([]resource.Snippet, error) {
@@ -588,6 +591,16 @@ func HasChanges(changes display.ResourceChanges) bool {
 		}
 	}
 	return c > 0
+}
+
+// PreviewChanges records what a preview finds that an update would change, in addition to the resource operations
+// that display.ResourceChanges counts.
+type PreviewChanges struct {
+	// StackOutputs is true if the update would change the outputs of the root stack resource.
+	StackOutputs bool
+	// State is true if the update would change the stored state, apart from the manifest, source positions, stack
+	// traces and init errors. The CLI checks the secrets manager itself.
+	State bool
 }
 
 func Update(u UpdateInfo, ctx *Context, opts UpdateOptions, dryRun bool) (
@@ -1278,8 +1291,10 @@ func update(
 
 	// Create an appropriate set of event listeners.
 	var actions runActions
+	var preview *previewActions
 	if opts.DryRun {
-		actions = newPreviewActions(ctx, opts)
+		preview = newPreviewActions(ctx, opts, info.Update.Target.Snapshot)
+		actions = preview
 	} else {
 		actions = newUpdateActions(ctx, info.Update, opts)
 	}
@@ -1293,6 +1308,10 @@ func update(
 
 	// Execute the deployment.
 	plan, changes, err := deployment.run(ctx)
+
+	if preview != nil && opts.PreviewChanges != nil {
+		*opts.PreviewChanges = preview.PreviewChanges()
+	}
 
 	if !opts.DryRun && opts.snippetDeletions != nil && ctx.SnapshotManager != nil {
 		if remaining, dropped := opts.snippetDeletions.remaining(opts.snippetsPrePersist); dropped {
@@ -1572,6 +1591,9 @@ type previewActions struct {
 	Opts    *deploymentOptions
 	Seen    map[resource.URN]deploy.Step
 	MapLock sync.Mutex
+
+	// previewChanges is guarded by MapLock.
+	previewChanges PreviewChanges
 }
 
 func isInternalStep(step deploy.Step) bool {
@@ -1597,16 +1619,70 @@ func shouldRecordReadStep(step deploy.Step) bool {
 		step.Old().Outputs.Diff(step.New().Outputs) != nil
 }
 
-func newPreviewActions(ctx *Context, opts *deploymentOptions) *previewActions {
+func newPreviewActions(ctx *Context, opts *deploymentOptions, base *deploy.Snapshot) *previewActions {
 	return &previewActions{
-		Context: ctx,
-		Ops:     make(map[display.StepOp]int),
-		Opts:    opts,
-		Seen:    make(map[resource.URN]deploy.Step),
+		Context:        ctx,
+		Ops:            make(map[display.StepOp]int),
+		Opts:           opts,
+		Seen:           make(map[resource.URN]deploy.Step),
+		previewChanges: PreviewChanges{State: opts.PreviewChanges != nil && writeChangesBase(base)},
 	}
 }
 
+// writeChangesBase returns true if any update would change base, because it drops pending operations other than creates
+// and clears integrity error metadata.
+func writeChangesBase(base *deploy.Snapshot) bool {
+	if base == nil {
+		return false
+	}
+	if base.Metadata.IntegrityErrorMetadata != nil {
+		return true
+	}
+	return slices.ContainsFunc(base.PendingOperations, func(op pkgresource.Operation) bool {
+		return op.Type != pkgresource.OperationTypeCreating
+	})
+}
+
+// stepChangesState returns true if the update would store a different state for step, apart from source positions,
+// stack traces and init errors.
+func stepChangesState(step deploy.Step) bool {
+	old, new := step.Old(), step.New()
+	switch step.Op() {
+	case deploy.OpSame:
+		if sameStep, ok := step.(*deploy.SameStep); ok && sameStep.IsSkippedCreate() {
+			return false
+		}
+		return SameStepMustWrite(step)
+	case deploy.OpRead, deploy.OpRefresh:
+		return old == nil || new == nil || statesDiffer(old, new)
+	case deploy.OpExtendParameterize:
+		// The snapshot derives its extensions from the resources that reference them.
+		return false
+	default:
+		return true
+	}
+}
+
+// tracksState returns true if the caller asked for PreviewChanges and no state change is known yet.
+func (acts *previewActions) tracksState() bool {
+	if acts.Opts.PreviewChanges == nil {
+		return false
+	}
+	acts.MapLock.Lock()
+	defer acts.MapLock.Unlock()
+	return !acts.previewChanges.State
+}
+
+func (acts *previewActions) markStateChanged() {
+	acts.MapLock.Lock()
+	acts.previewChanges.State = true
+	acts.MapLock.Unlock()
+}
+
 func (acts *previewActions) OnSnapshotWrite(base *deploy.Snapshot) error {
+	if acts.Opts.PreviewChanges != nil {
+		acts.markStateChanged()
+	}
 	return nil
 }
 
@@ -1615,6 +1691,10 @@ func (acts *previewActions) OnRebuiltBaseState() error {
 }
 
 func (acts *previewActions) OnStateMigration(transaction *deploy.StateMigrationTransaction) error {
+	if acts.Opts.PreviewChanges != nil {
+		acts.markStateChanged()
+	}
+
 	// TODO[https://github.com/pulumi/pulumi/issues/24714]: Replace with display event
 	acts.Opts.Diag.Infof(diag.Message(transaction.RootURN,
 		"State migration planned (state entries: %d before, %d after)."),
@@ -1687,6 +1767,10 @@ func (acts *previewActions) OnResourceStepPost(ctx any,
 			acts.MapLock.Unlock()
 		}
 
+		if acts.tracksState() && stepChangesState(step) {
+			acts.markStateChanged()
+		}
+
 		acts.Opts.Events.resourceOutputsEvent(
 			op,
 			step,
@@ -1709,6 +1793,19 @@ func (acts *previewActions) OnResourceOutputs(step deploy.Step) error {
 	acts.MapLock.Lock()
 	assertSeen(acts.Seen, step)
 	acts.MapLock.Unlock()
+
+	// Once State is true, only the outputs of the root stack can still change the result.
+	old, new := step.Old(), step.New()
+	isStack := new.Type == resource.RootStackType
+	if ((isStack && acts.Opts.PreviewChanges != nil) || acts.tracksState()) &&
+		(old == nil || !old.Outputs.DeepEquals(new.Outputs)) {
+		acts.MapLock.Lock()
+		acts.previewChanges.State = true
+		if isStack {
+			acts.previewChanges.StackOutputs = true
+		}
+		acts.MapLock.Unlock()
+	}
 
 	// Print the resource outputs separately.
 	acts.Opts.Events.resourceOutputsEvent(
@@ -1753,4 +1850,10 @@ func (acts *previewActions) MaybeCorrupt() bool {
 
 func (acts *previewActions) Changes() display.ResourceChanges {
 	return display.ResourceChanges(acts.Ops)
+}
+
+func (acts *previewActions) PreviewChanges() PreviewChanges {
+	acts.MapLock.Lock()
+	defer acts.MapLock.Unlock()
+	return acts.previewChanges
 }

@@ -506,75 +506,114 @@ func SameStepMustWrite(step deploy.Step) bool {
 		contract.Assertf(!sameStep.IsSkippedCreate(), "create cannot be skipped for SameStep")
 	}
 
-	// If the URN of this resource has changed, we must write the checkpoint. This should only be possible when a
-	// resource is aliased.
-	if old.URN != new.URN {
-		logging.V(9).Infof("SameStepMustWrite() true because of URN")
-		return true
-	}
-
-	// If the type of this resource has changed, we must write the checkpoint. This should only be possible when a
-	// resource is aliased.
-	if old.Type != new.Type {
-		logging.V(9).Infof("SameStepMustWrite() true because of Type")
-		return true
-	}
-
-	// If the kind of this resource has changed, we must write the checkpoint.
-	if old.Custom != new.Custom {
-		logging.V(9).Infof("SameStepMustWrite() true because of Custom")
-		return true
-	}
-
-	// We need to persist the changes if CustomTimeouts have changed
-	if old.CustomTimeouts != new.CustomTimeouts {
-		logging.V(9).Infof("SameStepMustWrite() true because of CustomTimeouts")
-		return true
-	}
-
-	// We need to persist the changes if RetainOnDelete has changed
-	if old.RetainOnDelete != new.RetainOnDelete {
-		logging.V(9).Infof("SameStepMustWrite() true because of RetainOnDelete")
+	if statesDifferBeforeID(old, new) {
 		return true
 	}
 
 	contract.Assertf(old.ID == new.ID,
 		"old and new resource IDs must be equal, got %v (old) != %v (new)", old.ID, new.ID)
 
+	return statesDifferAfterID(old, new)
+}
+
+// statesDiffer returns true if any semantically meaningful difference exists between two states of a resource, that is
+// any difference apart from init errors, timestamps, source positions and stack traces.
+func statesDiffer(old, new *pkgresource.State) bool {
+	if old.Delete != new.Delete {
+		logging.V(9).Infof("statesDiffer() true because of Delete")
+		return true
+	}
+
+	if old.External != new.External {
+		logging.V(9).Infof("statesDiffer() true because of External")
+		return true
+	}
+
+	if statesDifferBeforeID(old, new) {
+		return true
+	}
+
+	if old.ID != new.ID {
+		logging.V(9).Infof("statesDiffer() true because of ID")
+		return true
+	}
+
+	return statesDifferAfterID(old, new)
+}
+
+// statesDifferBeforeID compares the fields that SameStepMustWrite compares before it asserts that the IDs are equal.
+func statesDifferBeforeID(old, new *pkgresource.State) bool {
+	// If the URN of this resource has changed, we must write the checkpoint. This should only be possible when a
+	// resource is aliased.
+	if old.URN != new.URN {
+		logging.V(9).Infof("statesDiffer() true because of URN")
+		return true
+	}
+
+	// If the type of this resource has changed, we must write the checkpoint. This should only be possible when a
+	// resource is aliased.
+	if old.Type != new.Type {
+		logging.V(9).Infof("statesDiffer() true because of Type")
+		return true
+	}
+
+	// If the kind of this resource has changed, we must write the checkpoint.
+	if old.Custom != new.Custom {
+		logging.V(9).Infof("statesDiffer() true because of Custom")
+		return true
+	}
+
+	// We need to persist the changes if CustomTimeouts have changed
+	if old.CustomTimeouts != new.CustomTimeouts {
+		logging.V(9).Infof("statesDiffer() true because of CustomTimeouts")
+		return true
+	}
+
+	// We need to persist the changes if RetainOnDelete has changed
+	if old.RetainOnDelete != new.RetainOnDelete {
+		logging.V(9).Infof("statesDiffer() true because of RetainOnDelete")
+		return true
+	}
+
+	return false
+}
+
+// statesDifferAfterID compares the remaining fields of statesDiffer.
+func statesDifferAfterID(old, new *pkgresource.State) bool {
 	// If this resource's provider has changed, we must write the checkpoint. This can happen in scenarios involving
 	// aliased providers or upgrades to default providers.
 	if old.Provider != new.Provider {
-		logging.V(9).Infof("SameStepMustWrite() true because of Provider")
+		logging.V(9).Infof("statesDiffer() true because of Provider")
 		return true
 	}
 
 	// If this resource's parent has changed, we must write the checkpoint.
 	if old.Parent != new.Parent {
-		logging.V(9).Infof("SameStepMustWrite() true because of Parent")
+		logging.V(9).Infof("statesDiffer() true because of Parent")
 		return true
 	}
 
 	// If the DeletedWith attribute of this resource has changed, we must write the checkpoint.
 	if old.DeletedWith != new.DeletedWith {
-		logging.V(9).Infof("SameStepMustWrite() true because of DeletedWith")
+		logging.V(9).Infof("statesDiffer() true because of DeletedWith")
 		return true
 	}
 
 	// If the ReplaceWith attribute of this resource has changed, we must write the checkpoint.
 	if len(old.ReplaceWith) != len(new.ReplaceWith) {
-		logging.V(9).Infof("SameStepMustWrite() true because of ReplaceWith")
+		logging.V(9).Infof("statesDiffer() true because of ReplaceWith")
 		return true
 	}
 	for i, replaceWith := range old.ReplaceWith {
 		if replaceWith != new.ReplaceWith[i] {
-			logging.V(9).Infof("SameStepMustWrite() true because of ReplaceWith")
+			logging.V(9).Infof("statesDiffer() true because of ReplaceWith")
 			return true
 		}
 	}
 
 	// If the protection attribute of this resource has changed, we must write the checkpoint.
 	if old.Protect != new.Protect {
-		logging.V(9).Infof("SameStepMustWrite() true because of Protect")
+		logging.V(9).Infof("statesDiffer() true because of Protect")
 		return true
 	}
 
@@ -582,18 +621,18 @@ func SameStepMustWrite(step deploy.Step) bool {
 	// for the inputs of a "same" resource to have changed even if the contents of the input bags are different if the
 	// resource's provider deems the physical change to be semantically irrelevant.
 	if !old.Inputs.DeepEquals(new.Inputs) {
-		logging.V(9).Infof("SameStepMustWrite() true because of Inputs")
+		logging.V(9).Infof("statesDiffer() true because of Inputs")
 		return true
 	}
 	if !old.Outputs.DeepEquals(new.Outputs) {
-		logging.V(9).Infof("SameStepMustWrite() true because of Outputs")
+		logging.V(9).Infof("statesDiffer() true because of Outputs")
 		return true
 	}
 
 	// The engine builds dependency lists from sets, so the order of their URNs carries no meaning. If the dependencies
 	// have changed, we must write the checkpoint.
 	if !sameElements(old.Dependencies, new.Dependencies) {
-		logging.V(9).Infof("SameStepMustWrite() true because of Dependencies")
+		logging.V(9).Infof("statesDiffer() true because of Dependencies")
 		return true
 	}
 
@@ -609,79 +648,79 @@ func SameStepMustWrite(step deploy.Step) bool {
 	}
 	if differsOnKeysOf(old.PropertyDependencies, new.PropertyDependencies) ||
 		differsOnKeysOf(new.PropertyDependencies, old.PropertyDependencies) {
-		logging.V(9).Infof("SameStepMustWrite() true because of PropertyDependencies")
+		logging.V(9).Infof("statesDiffer() true because of PropertyDependencies")
 		return true
 	}
 
 	if !reflect.DeepEqual(old.ResourceHooks, new.ResourceHooks) {
-		logging.V(9).Infof("SameStepMustWrite() true because of ResourceHooks")
+		logging.V(9).Infof("statesDiffer() true because of ResourceHooks")
 		return true
 	}
 
 	// The state does not store the dependencies of the trigger, so they must not count as a change.
 	if !withoutDependencies(old.ReplacementTrigger).Equals(withoutDependencies(new.ReplacementTrigger)) {
-		logging.V(9).Infof("SameStepMustWrite() true because of ReplacementTrigger")
+		logging.V(9).Infof("statesDiffer() true because of ReplacementTrigger")
 		return true
 	}
 
 	if old.Taint != new.Taint {
-		logging.V(9).Infof("SameStepMustWrite() true because of Taint")
+		logging.V(9).Infof("statesDiffer() true because of Taint")
 		return true
 	}
 
 	if old.PendingReplacement != new.PendingReplacement {
-		logging.V(9).Infof("SameStepMustWrite() true because of PendingReplacement")
+		logging.V(9).Infof("statesDiffer() true because of PendingReplacement")
 		return true
 	}
 
 	if old.RefreshBeforeUpdate != new.RefreshBeforeUpdate {
-		logging.V(9).Infof("SameStepMustWrite() true because of RefreshBeforeUpdate")
+		logging.V(9).Infof("statesDiffer() true because of RefreshBeforeUpdate")
 		return true
 	}
 
 	if old.ExtensionRef != new.ExtensionRef {
-		logging.V(9).Infof("SameStepMustWrite() true because of ExtensionRef")
+		logging.V(9).Infof("statesDiffer() true because of ExtensionRef")
 		return true
 	}
 
 	if old.ImportID != new.ImportID {
-		logging.V(9).Infof("SameStepMustWrite() true because of ImportID")
+		logging.V(9).Infof("statesDiffer() true because of ImportID")
 		return true
 	}
 
 	if old.ViewOf != new.ViewOf {
-		logging.V(9).Infof("SameStepMustWrite() true because of ViewOf")
+		logging.V(9).Infof("statesDiffer() true because of ViewOf")
 		return true
 	}
 
 	if old.SnippetID != new.SnippetID {
-		logging.V(9).Infof("SameStepMustWrite() true because of SnippetID")
+		logging.V(9).Infof("statesDiffer() true because of SnippetID")
 		return true
 	}
 
 	// The order of the elements of these option lists carries no meaning.
 	if !sameElements(old.Aliases, new.Aliases) {
-		logging.V(9).Infof("SameStepMustWrite() true because of Aliases")
+		logging.V(9).Infof("statesDiffer() true because of Aliases")
 		return true
 	}
 
 	if !sameElements(old.AdditionalSecretOutputs, new.AdditionalSecretOutputs) {
-		logging.V(9).Infof("SameStepMustWrite() true because of AdditionalSecretOutputs")
+		logging.V(9).Infof("statesDiffer() true because of AdditionalSecretOutputs")
 		return true
 	}
 
 	if !sameElements(old.IgnoreChanges, new.IgnoreChanges) {
-		logging.V(9).Infof("SameStepMustWrite() true because of IgnoreChanges")
+		logging.V(9).Infof("statesDiffer() true because of IgnoreChanges")
 		return true
 	}
 
 	if !sameElements(old.ReplaceOnChanges, new.ReplaceOnChanges) {
-		logging.V(9).Infof("SameStepMustWrite() true because of ReplaceOnChanges")
+		logging.V(9).Infof("statesDiffer() true because of ReplaceOnChanges")
 		return true
 	}
 
 	if !sameElements(pathStrings(old.HideDiff), pathStrings(new.HideDiff)) {
-		logging.V(9).Infof("SameStepMustWrite() true because of HideDiff")
+		logging.V(9).Infof("statesDiffer() true because of HideDiff")
 		return true
 	}
 
@@ -690,7 +729,7 @@ func SameStepMustWrite(step deploy.Step) bool {
 	// for performance we elide those as well. This prevents _every_ resource needing a snapshot write when
 	// making large source code changes.
 
-	logging.V(9).Infof("SameStepMustWrite() false")
+	logging.V(9).Infof("statesDiffer() false")
 	return false
 }
 
